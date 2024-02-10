@@ -359,7 +359,9 @@ public final class BuildOperation: PackageStructureDelegate, SPMBuildCore.BuildS
         }
 
         // delegate is only available after createBuildSystem is called
-        self.buildSystemDelegate?.buildStart(configuration: self.productsBuildParameters.configuration)
+        self.buildSystemDelegate?.buildStart(
+            configuration: self.productsBuildParameters.configuration,
+            action: "Building")
 
         // Perform the build.
         let llbuildTarget = try computeLLBuildTargetName(for: subset)
@@ -382,8 +384,8 @@ public final class BuildOperation: PackageStructureDelegate, SPMBuildCore.BuildS
         self.buildSystemDelegate?.buildComplete(
             success: success,
             duration: duration,
-            subsetDescriptor: subsetDescriptor
-        )
+            action: "Building",
+            subsetDescriptor: subsetDescriptor)
         self.delegate?.buildSystem(self, didFinishWithResult: success)
         guard success else { throw Diagnostics.fatalError }
 
@@ -684,8 +686,23 @@ public final class BuildOperation: PackageStructureDelegate, SPMBuildCore.BuildS
         let buildSystem = try self.createBuildSystem(buildDescription: .none)
         self.buildSystem = buildSystem
 
-        // Build the package structure target which will re-generate the llbuild manifest, if necessary.
-        return buildSystem.build(target: "PackageStructure")
+        self.buildSystemDelegate?.buildStart(
+            configuration: self.productsBuildParameters.configuration,
+            action: "Planning")
+
+        // Build the package structure target which will re-generate the llbuild
+        // manifest, if necessary.
+        let buildStartTime = DispatchTime.now()
+        let success = buildSystem.build(target: "PackageStructure")
+        let duration = buildStartTime.distance(to: .now())
+
+        self.buildSystemDelegate?.buildComplete(
+            success: success,
+            duration: duration,
+            action: "Planning",
+            subsetDescriptor: nil)
+
+        return success
     }
 
     /// Create the build system using the given build description.
@@ -694,7 +711,7 @@ public final class BuildOperation: PackageStructureDelegate, SPMBuildCore.BuildS
     /// building the package structure target.
     private func createBuildSystem(buildDescription: BuildDescription?) throws -> SPMLLBuild.BuildSystem {
         // Figure out which progress bar we have to use during the build.
-        let progressAnimation = ProgressAnimation.ninja(
+        let progressAnimation = ProgressAnimation.blast(
             stream: self.outputStream,
             verbose: self.logLevel.isVerbose
         )
