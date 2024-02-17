@@ -18,28 +18,6 @@ import protocol TSCUtility.ProgressAnimationProtocol
 @_spi(SwiftPMInternal)
 public typealias ProgressAnimationProtocol = TSCUtility.ProgressAnimationProtocol
 
-@_spi(SwiftPMInternal_ProgressAnimation)
-public protocol ProgressAnimationProtocol2 {
-    func discovered(task name: String, id: Int, at time: ContinuousClock.Instant)
-    func running(task name: String, id: Int, at time: ContinuousClock.Instant)
-    func succeeded(task name: String, id: Int, at time: ContinuousClock.Instant)
-    func failed(task name: String, id: Int, at time: ContinuousClock.Instant)
-    func cancelled(task name: String, id: Int, at time: ContinuousClock.Instant)
-    func skipped(task name: String, id: Int, at time: ContinuousClock.Instant)
-
-    /// Complete the animation.
-    /// - Parameters:
-    ///   - success: Defines if the operation the animation represents was successful.
-    func complete(success: Bool)
-
-    /// Draw the animation.
-    func draw()
-
-    /// Clear the animation.
-    func clear()
-}
-
-
 /// Namespace to nest public progress animations under.
 @_spi(SwiftPMInternal)
 public enum ProgressAnimation {

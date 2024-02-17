@@ -10,7 +10,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-@_spi(SwiftPMInternal_ProgressAnimation)
+@_spi(SwiftPMInternal)
 import Basics
 import Dispatch
 import protocol Foundation.LocalizedError
@@ -413,17 +413,22 @@ private struct CommandTaskTracker {
         targetName: String?,
         time: ContinuousClock.Instant
     ) {
-        let task = self.progressText(of: command, targetName: targetName)
+        let event: ProgressAnimation2TaskEvent
         switch kind {
-        case .isScanning:
-            self.progressAnimation.discovered(task: task, id: command.unstableId, at: time)
-        case .isUpToDate:
-            self.progressAnimation.skipped(task: task, id: command.unstableId, at: time)
-        case .isComplete:
-            self.progressAnimation.succeeded(task: task, id: command.unstableId, at: time)
+        case .isScanning: event = .discovered
+        case .isUpToDate: event = .completed(.skipped)
+        case .isComplete: event = .completed(.succeeded)
         @unknown default:
             assertionFailure("unhandled command status kind \(kind) for command \(command)")
+            return
         }
+        let name = self.progressText(of: command, targetName: targetName)
+        self.progressAnimation.update(
+            task: .init(
+                id: command.unstableId,
+                name: name),
+            event: event,
+            at: time)
     }
 
     mutating func commandStarted(
@@ -431,9 +436,14 @@ private struct CommandTaskTracker {
         targetName: String?,
         time: ContinuousClock.Instant
     ) {
-        let task = self.progressText(of: command, targetName: targetName)
-        self.onTaskProgressUpdateText?(task, targetName)
-        self.progressAnimation.running(task: task, id: command.unstableId, at: time)
+        let name = self.progressText(of: command, targetName: targetName)
+        self.onTaskProgressUpdateText?(name, targetName)
+        self.progressAnimation.update(
+            task: .init(
+                id: command.unstableId,
+                name: name),
+            event: .started,
+            at: time)
     }
 
     mutating func commandFinished(
@@ -442,20 +452,24 @@ private struct CommandTaskTracker {
         targetName: String?,
         time: ContinuousClock.Instant
     ) {
-        let task = self.progressText(of: command, targetName: targetName)
-        self.onTaskProgressUpdateText?(task, targetName)
+        let name = self.progressText(of: command, targetName: targetName)
+        self.onTaskProgressUpdateText?(name, targetName)
+        let event: ProgressAnimation2TaskCompletionEvent
         switch result {
-        case .succeeded:
-            self.progressAnimation.succeeded(task: task, id: command.unstableId, at: time)
-        case .failed:
-            self.progressAnimation.failed(task: task, id: command.unstableId, at: time)
-        case .cancelled:
-            self.progressAnimation.cancelled(task: task, id: command.unstableId, at: time)
-        case .skipped:
-            self.progressAnimation.skipped(task: task, id: command.unstableId, at: time)
+        case .succeeded: event = .succeeded
+        case .failed: event = .failed
+        case .cancelled: event = .cancelled
+        case .skipped: event = .skipped
         @unknown default:
             assertionFailure("unhandled command result \(result) for command \(command)")
+            return
         }
+        self.progressAnimation.update(
+            task: .init(
+                id: command.unstableId,
+                name: name),
+            event: .completed(event),
+            at: time)
     }
 
     mutating func swiftCompilerDidOutputMessage(
@@ -531,15 +545,24 @@ private struct CommandTaskTracker {
         _ name: String,
         time: ContinuousClock.Instant
     ) {
-        self.progressAnimation.discovered(task: name, id: name.hash, at: time)
-        self.progressAnimation.running(task: name, id: name.hash, at: time)
+        self.progressAnimation.update(
+            task: .init(id: name.hash, name: name),
+            event: .discovered,
+            at: time)
+        self.progressAnimation.update(
+            task: .init(id: name.hash, name: name),
+            event: .started,
+            at: time)
     }
 
     mutating func buildPreparationStepFinished(
         _ name: String,
         time: ContinuousClock.Instant
     ) {
-        self.progressAnimation.succeeded(task: name, id: name.hash, at: time)
+        self.progressAnimation.update(
+            task: .init(id: name.hash, name: name),
+            event: .completed(.succeeded),
+            at: time)
     }
 }
 

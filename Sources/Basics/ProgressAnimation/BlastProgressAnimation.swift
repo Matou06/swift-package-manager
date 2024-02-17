@@ -12,21 +12,18 @@
 
 import Foundation
 import class TSCBasic.TerminalController
+import class TSCBasic.BufferedOutputByteStream
 import protocol TSCBasic.WritableByteStream
 
 extension ProgressAnimation {
     /// A modern progress animation that adapts to the provided output stream.
-    @_spi(SwiftPMInternal_ProgressAnimation)
+    @_spi(SwiftPMInternal)
     public static func blast(
         stream: WritableByteStream,
         verbose: Bool
     ) -> any ProgressAnimationProtocol {
-        Self.dynamic(
-            stream: stream,
-            verbose: verbose,
-            ttyTerminalAnimationFactory: { Blast(terminal: $0) },
-            dumbTerminalAnimationFactory: { SingleLinePercentProgressAnimation(stream: stream, header: nil) },
-            defaultAnimationFactory: { MultiLineNinjaProgressAnimation(stream: stream) })
+        let tty = TerminalController(stream: stream) != nil
+        return BlastProgressAnimation(stream: stream, tty: tty)
     }
 }
 
@@ -39,93 +36,24 @@ extension FormatStyle where Self == Duration.UnitsFormatStyle {
 }
 
 struct BlastTask: Equatable, Comparable {
-    var name: String
+    var id: Int { self.underlying.id }
+    var underlying: ProgressAnimation2Task
     var start: ContinuousClock.Instant
-    var state: BlastTaskState
+    var state: ProgressAnimation2TaskEvent
 
     static func < (lhs: Self, rhs: Self) -> Bool { lhs.start < rhs.start }
 }
 
-enum BlastTaskState {
-    case pending
-    case running
-    case succeeded
-    case failed
-    case cancelled
-    case skipped
-
-    var color: TerminalController.Color {
-        switch self {
-        case .pending: .yellow
-        case .running: .cyan
-        case .succeeded: .green
-        case .failed: .red
-        case .cancelled: .gray
-        case .skipped: .gray
-        }
-    }
-
-    var symbol: String {
-        #if os(macOS)
-        switch self {
-        case .pending: "􀍡 "
-        case .running: "􀚁 "
-        case .succeeded: "􀁢 "
-        case .failed: "􀁠 "
-        case .cancelled: "􀁞 "
-        case .skipped: "􀕧 "
-        }
-        #else
-        switch self {
-        case .pass: "✔"
-        case .fail: "✘"
-        case .skip: "⍉"
-        }
-        #endif
-    }
-}
-
-struct BlastTaskCounts {
-    static var zero: Self {
-        .init(
-            pending: 0,
-            running: 0,
-            succeeded: 0,
-            failed: 0,
-            cancelled: 0,
-            skipped: 0,
-            completed: 0,
-            total: 0)
-    }
-
-
-    var pending: Int
-    var running: Int
-    var succeeded: Int
-    var failed: Int
-    var cancelled: Int
-    var skipped: Int
-    // Should be the sum of all other complete counts
-    var completed: Int
-    // Should be the sum of all other counts
-    var total: Int
-
-    func validate() {
-        let completed = self.succeeded + self.failed + self.cancelled + self.skipped
-        assert(completed == self.completed)
-        let total = completed + self.running + self.pending
-        assert(total == self.total)
-    }
-}
-
-class Blast {
-    var terminal: TerminalController
-    var counts: BlastTaskCounts
+class BlastProgressAnimation {
+    var terminal: BlastTerminalController
+    var tty: Bool
+    var counts: ProgressAnimation2TaskCounts
     var drawnLines: Int
     var tasks: [Int: BlastTask]
 
-    init(terminal: TerminalController) {
-        self.terminal = terminal
+    init(stream: WritableByteStream, tty: Bool) {
+        self.terminal = BlastTerminalController(stream: stream)
+        self.tty = tty
         self.counts = .zero
         self.drawnLines = 0
         self.tasks = [:]
@@ -133,211 +61,181 @@ class Blast {
 
     func log(_ message: String) {
 #if BLAST_LOG || true
-        fputs("\(message)\n", stderr)
+//        fputs("\(message)\n", stderr)
 #endif
     }
 }
 
-extension Blast: ProgressAnimationProtocol {
+extension BlastProgressAnimation: ProgressAnimationProtocol {
     func update(step: Int, total: Int, text: String) { }
+    func complete(success: Bool) { self._complete() }
 }
 
-extension Blast: ProgressAnimationProtocol2 {
-    func discovered(task name: String, id: Int, at time: ContinuousClock.Instant) {
-        log("Blast.pending(task: \(name), id: \(id), at: \(time))")
-        guard !self.tasks.keys.contains(id) else {
-            log(">> unexpected duplicate discovery of task with id: \(id) and name: \(name)")
-            return
-        }
-        self.counts.pending += 1
-        self.counts.total += 1
-
-        self.tasks[id] = BlastTask(name: name, start: time, state: .pending)
-        self.clear()
-        self.draw()
-    }
-
-    func running(task name: String, id: Int, at time: ContinuousClock.Instant) {
-        log("Blast.running(task: \(name), id: \(id), at: \(time))")
-        guard var task = self.tasks[id] else {
-            log(">> unexpected start of unknown task with id: \(id) and name: \(name)")
-            return
-        }
-        guard task.state == .pending else {
-            log(">> unexpected restart of task with id: \(id) and name: \(name) in state: \(task.state)")
-            return
-        }
-        self.counts.pending -= 1
-        self.counts.running += 1
-
-        task.state = .running
-        self.tasks[id] = task
-        self.clear()
-        self.draw()
-    }
-
-    func succeeded(task name: String, id: Int, at time: ContinuousClock.Instant) {
-        log("Blast.succeeded(task: \(name), id: \(id), at: \(time))")
-        guard var task = self.tasks[id] else {
-            log(">> unexpected completion \(BlastTaskState.succeeded) of unknown task with id: \(id) and name: \(name)")
-            return
-        }
-        switch task.state {
-        case .pending:
-            guard task.state == .running else {
-                log(">> unexpected completion \(BlastTaskState.succeeded) of not running task with id: \(id) and name: \(name) in state: \(task.state)")
+extension BlastProgressAnimation: ProgressAnimationProtocol2 {
+    func update(task: ProgressAnimation2Task, event: ProgressAnimation2TaskEvent, at time: ContinuousClock.Instant) {
+        log("Blast.task(\(task), event: \(event), at: \(time))")
+        switch event {
+        case .discovered:
+            guard self.tasks[task.id] == nil else {
+                assertionFailure("unexpected duplicate discovery of task \(task)")
                 return
             }
-        case .running:
-            self.counts.running -= 1
-            self.counts.succeeded += 1
-            self.counts.completed += 1
 
-            task.state = .succeeded
-            self.tasks[id] = task
-            self.clear()
-            self.drawTask(state: .succeeded, task: name, duration: task.start.duration(to: time))
-            self.draw()
-        case .succeeded, .failed, .cancelled, .skipped:
-            // Already accounted for
-            return
-        }
-    }
+            self.tasks[task.id] = BlastTask(underlying: task, start: time, state: .discovered)
+            self.counts.taskDiscovered()
 
-    func failed(task name: String, id: Int, at time: ContinuousClock.Instant) {
-        log("Blast.failed(task: \(name), id: \(id), at: \(time))")
-        guard var task = self.tasks[id] else {
-            log(">> unexpected completion \(BlastTaskState.failed) of unknown task with id: \(id) and name: \(name)")
-            return
-        }
-        guard task.state == .running else {
-            log(">> unexpected completion \(BlastTaskState.failed) of not running task with id: \(id) and name: \(name) in state: \(task.state)")
-            return
-        }
-        self.counts.running -= 1
-        self.counts.failed += 1
-        self.counts.completed += 1
+            self._clear()
+            self._draw()
+            self._flush()
 
-        task.state = .failed
-        self.tasks[id] = task
-        self.clear()
-        self.drawTask(state: .failed, task: name, duration: task.start.duration(to: time))
-        self.draw()
-    }
-
-    func cancelled(task name: String, id: Int, at time: ContinuousClock.Instant) {
-        log("Blast.cancelled(task: \(name), id: \(id), at: \(time))")
-        guard var task = self.tasks[id] else {
-            log(">> unexpected completion \(BlastTaskState.cancelled) of unknown task with id: \(id) and name: \(name)")
-            return
-        }
-        guard task.state == .running else {
-            log(">> unexpected completion \(BlastTaskState.cancelled) of not running task with id: \(id) and name: \(name) in state: \(task.state)")
-            return
-        }
-        self.counts.running -= 1
-        self.counts.cancelled += 1
-        self.counts.completed += 1
-
-        task.state = .cancelled
-        self.tasks[id] = task
-        self.clear()
-        self.drawTask(state: .cancelled, task: name, duration: task.start.duration(to: time))
-        self.draw()
-    }
-
-    func skipped(task name: String, id: Int, at time: ContinuousClock.Instant) {
-        log("Blast.skipped(task: \(name), id: \(id), at: \(time))")
-        guard var task = self.tasks[id] else {
-            log(">> unexpected completion \(BlastTaskState.skipped) of unknown task with id: \(id) and name: \(name)")
-            return
-        }
-
-        switch task.state {
-        case .pending, .running:
-            if task.state == .pending {
-                self.counts.pending -= 1
-            } else {
-                self.counts.running -= 1
+        case .started:
+            guard var task = self.tasks[task.id] else {
+                assertionFailure("unexpected start of unknown task \(task)")
+                return
             }
-            self.counts.skipped += 1
-            self.counts.completed += 1
+            guard task.state == .discovered else {
+                assertionFailure("unexpected restart of task \(task) in state: \(task.state)")
+                return
+            }
 
-            task.state = .skipped
-            self.tasks[id] = task
-            self.clear()
-            self.drawTask(state: .skipped, task: name, duration: task.start.duration(to: time))
-            self.draw()
-        case .succeeded, .failed, .cancelled, .skipped:
-            // Already accounted for
-            return
+            task.state = .started
+            task.start = time
+            self.tasks[task.id] = task
+            self.counts.taskStarted()
+
+            self._clear()
+            self._draw()
+            self._flush()
+
+        case .completed(let completionEvent):
+            guard var task = self.tasks[task.id] else {
+                assertionFailure("unexpected \(event) of unknown task \(task)")
+                return
+            }
+            switch task.state {
+            // Skipped is special, tasks can be skipped and never started
+            case .discovered where completionEvent == .skipped:
+                task.state = event
+                self.tasks[task.id] = task
+                self.counts.taskSkipped()
+
+                let duration = task.start.duration(to: time)
+                self._clear()
+                self._draw(task: task, duration: duration)
+                self._draw()
+                self._flush()
+
+            case .discovered:
+                assertionFailure("unexpected \(event) of not started task \(task)")
+                return
+
+            case .started:
+                task.state = event
+                self.tasks[task.id] = task
+                self.counts.taskCompleted(completionEvent)
+
+                let duration = task.start.duration(to: time)
+                self._clear()
+                self._draw(task: task, duration: duration)
+                self._draw()
+                self._flush()
+
+            case .completed:
+                // Already accounted for
+                return
+            }
         }
-    }
-
-    func draw(state: BlastTaskState) {
-        self.terminal.write(state.symbol, inColor: state.color)
-    }
-
-    func drawTask(
-        state: BlastTaskState,
-        task name: String,
-        duration: ContinuousClock.Duration
-    ) {
-        self.terminal.write(state.symbol, inColor: state.color)
-        self.terminal.write(" \(name)")
-        self.terminal.write(" (\(duration.formatted(.blast)))", inColor: .white, bold: true)
-        self.terminal.endLine()
-    }
-
-    func drawStats() {
-        self.counts.validate()
-
-        self.terminal.write("[", inColor: .white, bold: true)
-        self.terminal.write("\(self.counts.completed)")
-        self.terminal.write("/", inColor: .white, bold: true)
-        self.terminal.write("\(self.counts.total)")
-        self.terminal.write("] ", inColor: .white, bold: true)
-
-        self.draw(state: .running)
-        self.terminal.write(" \(self.counts.running), ")
-        self.draw(state: .pending)
-        self.terminal.write(" \(self.counts.pending), ")
-        self.draw(state: .succeeded)
-        self.terminal.write(" \(self.counts.succeeded), ")
-        self.draw(state: .failed)
-        self.terminal.write(" \(self.counts.failed), ")
-        self.draw(state: .cancelled)
-        self.terminal.write(" \(self.counts.cancelled), ")
-        self.draw(state: .skipped)
-        self.terminal.write(" \(self.counts.skipped)")
     }
 
     func draw() {
-        self.drawStats()
-        self.drawnLines += 1
-        let tasks = self.tasks.values.filter { $0.state == .running }.sorted()
-        for task in tasks {
-            self.terminal.write("\n")
-            self.draw(state: .running)
-            self.terminal.write(" \(task.name)")
-            self.drawnLines += 1
-        }
-        self.terminal.flush()
+        self._draw()
+        self._flush()
     }
 
-    func complete(success: Bool) {
-        self.clear()
-        self.drawStats()
-        self.terminal.endLine()
+    func complete() {
+        self._complete()
+        self._flush()
     }
 
     func clear() {
+        self._clear()
+        self._flush()
+    }
+}
+
+extension BlastProgressAnimation {
+    func _draw(event: ProgressAnimation2TaskEvent) {
+        if event.color.1 {
+            self.terminal.text(styles: .brightForegroundColor(event.color.0))
+        } else {
+            self.terminal.text(styles: .foregroundColor(event.color.0))
+        }
+        self.terminal.write(event.symbol)
+    }
+
+    func _draw(task: BlastTask, duration: ContinuousClock.Duration?) {
+        self._draw(event: task.state)
+        self.terminal.text(styles: .reset)
+        self.terminal.write(" \(task.underlying.name)")
+        if let duration {
+            self.terminal.text(styles: .foregroundColor(.white), .bold)
+            self.terminal.write(" (\(duration.formatted(.blast)))")
+            self.terminal.text(styles: .reset)
+        }
+        self.terminal.newLine()
+    }
+
+    func _draw(state: ProgressAnimation2TaskEvent, count: Int, last: Bool) {
+        self._draw(event: state)
+        self.terminal.write(" \(count)")
+        if !last {
+            self.terminal.text(styles: .reset)
+            self.terminal.write(", ")
+        }
+    }
+
+    func _drawStates() {
+        self.terminal.text(styles: .foregroundColor(.white), .bold)
+        self.terminal.write("[\(self.counts.completed)/\(self.counts.total)] ")
+        self.terminal.text(styles: .reset)
+        self._draw(state: .started, count: self.counts.running, last: false)
+        self._draw(state: .discovered, count: self.counts.pending, last: false)
+        self._draw(state: .completed(.succeeded), count: self.counts.succeeded, last: false)
+        self._draw(state: .completed(.failed), count: self.counts.failed, last: false)
+        self._draw(state: .completed(.cancelled), count: self.counts.cancelled, last: false)
+        self._draw(state: .completed(.skipped), count: self.counts.skipped, last: true)
+        self.terminal.text(styles: .reset)
+    }
+
+    func _draw() {
+        assert(self.drawnLines == 0)
+        let tasks = self.tasks.values.filter { $0.state == .started }.sorted()
+        for task in tasks {
+            self._draw(task: task, duration: nil)
+            self.drawnLines += 1
+        }
+        self._drawStates()
+        self.drawnLines += 1
+    }
+
+    func _complete() {
+        self._clear()
+        self._drawStates()
+        self.terminal.newLine()
+    }
+
+    func _clear() {
         guard self.drawnLines > 0 else { return }
-        self.terminal.clearLine()
+        self.terminal.eraseLine(.entire)
+        self.terminal.carriageReturn()
         for _ in 1..<self.drawnLines {
-            self.terminal.moveCursor(up: 1)
-            self.terminal.clearLine()
+            self.terminal.moveCursorPrevious(lines: 1)
+            self.terminal.eraseLine(.entire)
         }
         self.drawnLines = 0
+    }
+
+    func _flush() {
+        self.terminal.flush()
     }
 }
