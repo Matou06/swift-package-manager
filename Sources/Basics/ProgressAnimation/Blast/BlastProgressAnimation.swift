@@ -21,9 +21,12 @@ extension ProgressAnimation {
     public static func blast(
         stream: WritableByteStream,
         verbose: Bool
-    ) -> any ProgressAnimationProtocol {
-        let tty = TerminalController(stream: stream) != nil
-        return BlastProgressAnimation(stream: stream, tty: tty)
+    ) -> some ProgressAnimationProtocol {
+        _ = TerminalController(stream: stream)
+        return BlastProgressAnimation(
+            stream: stream,
+            redraw: BlastTerminal.supportsRedrawing(stream: stream) && !verbose,
+            colorize: BlastTerminal.supportsColors(stream: stream))
     }
 }
 
@@ -45,24 +48,23 @@ struct BlastTask: Equatable, Comparable {
 }
 
 class BlastProgressAnimation {
+    // Dependencies
     var terminal: BlastTerminalController
-    var tty: Bool
+
+    // Configuration
+    var redraw: Bool
+
+    // Internal state
     var counts: ProgressAnimation2TaskCounts
     var drawnLines: Int
     var tasks: [Int: BlastTask]
 
-    init(stream: WritableByteStream, tty: Bool) {
-        self.terminal = BlastTerminalController(stream: stream)
-        self.tty = tty
+    init(stream: WritableByteStream, redraw: Bool, colorize: Bool) {
+        self.terminal = BlastTerminalController(stream: stream, colorize: colorize)
+        self.redraw = redraw
         self.counts = .zero
         self.drawnLines = 0
         self.tasks = [:]
-    }
-
-    func log(_ message: String) {
-#if BLAST_LOG || true
-//        fputs("\(message)\n", stderr)
-#endif
     }
 }
 
@@ -73,7 +75,6 @@ extension BlastProgressAnimation: ProgressAnimationProtocol {
 
 extension BlastProgressAnimation: ProgressAnimationProtocol2 {
     func update(task: ProgressAnimation2Task, event: ProgressAnimation2TaskEvent, at time: ContinuousClock.Instant) {
-        log("Blast.task(\(task), event: \(event), at: \(time))")
         switch event {
         case .discovered:
             guard self.tasks[task.id] == nil else {
@@ -208,6 +209,7 @@ extension BlastProgressAnimation {
     }
 
     func _draw() {
+        guard self.redraw else { return }
         assert(self.drawnLines == 0)
         let tasks = self.tasks.values.filter { $0.state == .started }.sorted()
         for task in tasks {
@@ -225,6 +227,7 @@ extension BlastProgressAnimation {
     }
 
     func _clear() {
+        guard self.redraw else { return }
         guard self.drawnLines > 0 else { return }
         self.terminal.eraseLine(.entire)
         self.terminal.carriageReturn()

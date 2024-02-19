@@ -13,49 +13,15 @@
 import class TSCBasic.BufferedOutputByteStream
 import protocol TSCBasic.WritableByteStream
 
-struct BlastInMemoryBuffer {
-    /// Initial buffer size of the data buffer.
-    ///
-    /// This buffer will grow if more space is needed.
-    static let initialBufferSize = 1024
-
-    /// The data buffer.
-    private var buffer: [UInt8]
-    private var availableBufferSize: Int {
-        self.buffer.capacity - self.buffer.count
-    }
-
-    init() {
-        self.buffer = []
-        self.buffer.reserveCapacity(Self.initialBufferSize)
-    }
-
-    /// Clears the buffer maintaining current capacity.
-    mutating func flush(_ body: (borrowing [UInt8]) -> ()) {
-        body(self.buffer)
-        self.buffer.removeAll(keepingCapacity: true)
-    }
-
-    /// Write a string as utf8 bytes to the buffer.
-    mutating func write(_ string: String) {
-        self.write(string.utf8)
-    }
-
-    /// Write a collection of bytes to the buffer.
-    mutating func write(_ bytes: some Collection<UInt8>) {
-        let byteCount = bytes.count
-        self.buffer.reserveCapacity(byteCount + self.buffer.count)
-        self.buffer.append(contentsOf: bytes)
-    }
-}
-
 struct BlastTerminalController {
     var stream: WritableByteStream
-    var buffer: BlastInMemoryBuffer
+    var buffer: BlastOutputBuffer
+    var colorize: Bool
 
-    init(stream: WritableByteStream) {
+    init(stream: WritableByteStream, colorize: Bool) {
         self.stream = stream
         self.buffer = .init()
+        self.colorize = colorize
     }
 
     /// Writes a string to the stream.
@@ -79,7 +45,6 @@ struct BlastTerminalController {
     }
 }
 
-/// ANSI escape code.
 extension BlastTerminalController {
     /// ESC character.
     private static let escape = "\u{001B}["
@@ -129,6 +94,7 @@ extension BlastTerminalController {
 
     mutating func text(styles: ANSITextStyle...) {
         precondition(!styles.isEmpty)
+        guard self.colorize else { return }
         self.buffer.write("\(Self.escape)\(styles[0].rawValue)")
         for style in styles.dropFirst() {
             self.buffer.write(";\(style.rawValue)")
