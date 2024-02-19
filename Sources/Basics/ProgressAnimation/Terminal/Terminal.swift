@@ -34,11 +34,13 @@ final class Terminal {
     private var stream: WritableByteStream
 
     /// Constructs the instance if the stream is a tty.
-    public init?(stream: WritableByteStream) {
+    init?(stream: WritableByteStream) {
         let realStream = (stream as? ThreadSafeOutputByteStream)?.stream ?? stream
 
         // Make sure it is a file stream and it is tty.
-        guard let fileStream = realStream as? LocalFileOutputByteStream, TerminalController.isTTY(fileStream) else {
+        guard let fileStream = steam as? LocalFileOutputByteStream,
+            Self.isTTY(fileStream)
+        else {
             return nil
         }
 
@@ -55,63 +57,25 @@ final class Terminal {
 #endif
         self.stream = stream
     }
-
-    /// Flushes the stream.
-    public func flush() {
-        stream.flush()
-    }
-
-    /// Clears the current line and moves the cursor to beginning of the line..
-    public func clearLine() {
-        stream.send(clearLineString).send("\r")
-        flush()
-    }
-
-    /// Moves the cursor y columns up.
-    public func moveCursor(up: Int) {
-        stream.send("\u{001B}[\(up)A")
-        flush()
-    }
-
-    /// Writes a string to the stream.
-    public func write(_ string: String, inColor color: Color = .noColor, bold: Bool = false) {
-        writeWrapped(string, inColor: color, bold: bold, stream: stream)
-        flush()
-    }
-
-    /// Inserts a new line character into the stream.
-    public func endLine() {
-        stream.send("\n")
-        flush()
-    }
-
-    /// Wraps the string into the color mentioned.
-    public func wrap(_ string: String, inColor color: Color, bold: Bool = false) -> String {
-        let stream = BufferedOutputByteStream()
-        writeWrapped(string, inColor: color, bold: bold, stream: stream)
-        return stream.bytes.description
-    }
-
-    private func writeWrapped(_ string: String, inColor color: Color, bold: Bool = false, stream: WritableByteStream) {
-        // Don't wrap if string is empty or color is no color.
-        guard !string.isEmpty && color != .noColor else {
-            stream.send(string)
-            return
-        }
-        stream.send(color.string).send(bold ? boldString : "").send(string).send(resetString)
-    }
 }
 
-extension TerminalController {
+extension Terminal {
+    static func underlyingStream(
+        _ stream: WritableByteStream
+    ) -> LocalFileOutputByteStream? {
+        let realStream = (stream as? ThreadSafeOutputByteStream)?.stream ?? stream
+        return realStream as? LocalFileOutputByteStream
+    }
+
     /// Checks if passed file stream is tty.
-    public static func isTTY(_ stream: LocalFileOutputByteStream) -> Bool {
+    static func isTTY(_ stream: LocalFileOutputByteStream) -> Bool {
         return terminalType(stream) == .tty
     }
 
     /// Computes the terminal type of the stream.
-    public static func terminalType(_ stream: LocalFileOutputByteStream) -> TerminalType {
+    static func terminalType(_ stream: LocalFileOutputByteStream) -> TerminalType {
 #if !os(Windows)
-        if ProcessEnv.vars["TERM"] == "dumb" {
+        if ProcessEnv.block["TERM"] == "dumb" {
             return .dumb
         }
 #endif
@@ -120,11 +84,11 @@ extension TerminalController {
     }
 }
 
-extension TerminalController {
+extension Terminal {
     /// Width of the terminal.
     var width: Int {
         // Determine the terminal width otherwise assume a default.
-        if let terminalWidth = TerminalController.terminalWidth(), terminalWidth > 0 {
+        if let terminalWidth = Terminal.terminalWidth(), terminalWidth > 0 {
             return terminalWidth
         } else {
             return 80

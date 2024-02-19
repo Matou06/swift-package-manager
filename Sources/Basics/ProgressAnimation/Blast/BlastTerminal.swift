@@ -21,25 +21,11 @@ enum BlastTerminal {
         return xpcServiceName?.localizedCaseInsensitiveContains("com.apple.dt.xcode") ?? false
     }
 
-    static func isTTY(stream: WritableByteStream) -> Bool {
-        guard let stream = stream as? LocalFileOutputByteStream else { return false }
-        return TerminalController.isTTY(stream)
-    }
-
-    static func supportsRedrawing(stream: WritableByteStream) -> Bool {
-        return Self.isTTY(stream: stream) && !Self.isRunningUnderXcode()
-    }
-
     static func supportsColors(stream: WritableByteStream) -> Bool {
         if let cliColorForce = ProcessInfo.processInfo.environment["CLICOLOR_FORCE"],
            ["1", "yes", "true"].contains(cliColorForce) { return true}
         guard Self.isTTY(stream: stream) else { return false }
-#if os(macOS)
-        if let xpcServiceName = ProcessInfo.processInfo.environment["XPC_SERVICE_NAME"],
-           xpcServiceName.localizedCaseInsensitiveContains("com.apple.dt.xcode") {
-            return false
-        }
-#endif
+        guard !Self.isRunningUnderXcode() else { return false }
         guard let term = ProcessInfo.processInfo.environment["TERM"],
               !["", "dumb", "cons25", "emacs"].contains(term) else { return false }
         return !Self.isRunningUnderXcode()
