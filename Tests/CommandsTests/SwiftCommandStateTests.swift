@@ -362,7 +362,7 @@ final class SwiftCommandStateTests: CommandsTestCase {
             nil
         )
         let plan = try BuildPlan(
-            destinationBuildParameters: swiftCommandState.productsBuildParameters,
+            productsBuildParameters: swiftCommandState.productsBuildParameters,
             toolsBuildParameters: swiftCommandState.toolsBuildParameters,
             graph: graph,
             fileSystem: fs,
